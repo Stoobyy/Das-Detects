@@ -7,7 +7,6 @@ Now with REAL VoIP call detection and audio recording!
 """
 
 import customtkinter as ctk
-import random
 import shutil
 import sys
 import os
@@ -210,21 +209,6 @@ class App(ctk.CTk):
         self.call_label.pack(pady=14, padx=24)
         
         # ─────────────────────────────────────
-        # ALERT BANNER (hidden initially)
-        # ─────────────────────────────────────
-        self.alert_frame = ctk.CTkFrame(
-            pad, fg_color=C["surface"],
-            corner_radius=10, border_width=1, border_color=C["alert"]
-        )
-        self.alert_label = ctk.CTkLabel(
-            self.alert_frame, 
-            text="⚠  AI Voice Detected — Review Required",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color=C["alert"]
-        )
-        self.alert_label.pack(pady=14, padx=24)
-        
-        # ─────────────────────────────────────
         # MAIN STATUS CARD
         # ─────────────────────────────────────
         self.status_card = ctk.CTkFrame(
@@ -243,12 +227,12 @@ class App(ctk.CTk):
         )
         self.status_lbl.pack()
         
-        self.conf_lbl = ctk.CTkLabel(
-            inner, text="—",
+        self.frames_lbl = ctk.CTkLabel(
+            inner, text="0 frames recorded",
             font=ctk.CTkFont(size=16),
             text_color=C["text_dim"]
         )
-        self.conf_lbl.pack(pady=(8, 0))
+        self.frames_lbl.pack(pady=(8, 0))
         
         # Thin divider
         div = ctk.CTkFrame(inner, height=1, fg_color=C["border"], width=200)
@@ -262,75 +246,40 @@ class App(ctk.CTk):
         self.desc_lbl.pack()
         
         # ─────────────────────────────────────
-        # METER + CONTROLS ROW
+        # CONTROLS CARD
         # ─────────────────────────────────────
-        row = ctk.CTkFrame(pad, fg_color="transparent")
-        row.pack(fill="x", pady=(0, 20))
-        row.grid_columnconfigure(0, weight=3)
-        row.grid_columnconfigure(1, weight=2)
-        
-        # Meter card
-        self.meter_card = ctk.CTkFrame(
-            row, fg_color=C["surface"],
-            corner_radius=14, border_width=1, border_color=C["border"]
-        )
-        self.meter_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
-        
-        meter_inner = ctk.CTkFrame(self.meter_card, fg_color="transparent")
-        meter_inner.pack(fill="x", padx=24, pady=20)
-        
-        meter_head = ctk.CTkFrame(meter_inner, fg_color="transparent")
-        meter_head.pack(fill="x")
-        
-        self.prob_lbl = ctk.CTkLabel(
-            meter_head, text="AI Probability",
-            font=ctk.CTkFont(size=14),
-            text_color=C["text_dim"]
-        )
-        self.prob_lbl.pack(side="left")
-        
-        self.pct_lbl = ctk.CTkLabel(
-            meter_head, text="0%",
-            font=ctk.CTkFont(size=18, weight="bold"),
-            text_color=C["accent"]
-        )
-        self.pct_lbl.pack(side="right")
-        
-        self.prog = ctk.CTkProgressBar(
-            meter_inner, height=6, corner_radius=3,
-            fg_color=C["elevated"], progress_color=C["safe"]
-        )
-        self.prog.pack(fill="x", pady=(14, 0))
-        self.prog.set(0)
-        
-        # Controls card
         self.ctrl_card = ctk.CTkFrame(
-            row, fg_color=C["surface"],
+            pad, fg_color=C["surface"],
             corner_radius=14, border_width=1, border_color=C["border"]
         )
-        self.ctrl_card.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        self.ctrl_card.pack(fill="x", pady=(0, 20))
         
         ctrl_inner = ctk.CTkFrame(self.ctrl_card, fg_color="transparent")
-        ctrl_inner.pack(fill="both", expand=True, padx=20, pady=20)
+        ctrl_inner.pack(fill="both", expand=True, padx=24, pady=20)
+        
+        btn_row = ctk.CTkFrame(ctrl_inner, fg_color="transparent")
+        btn_row.pack(fill="x")
+        btn_row.grid_columnconfigure(0, weight=1)
+        btn_row.grid_columnconfigure(1, weight=1)
         
         self.start_btn = ctk.CTkButton(
-            ctrl_inner, text="Start Monitoring",
+            btn_row, text="Start Monitoring",
             font=ctk.CTkFont(size=15, weight="bold"),
             fg_color=C["accent"], hover_color=C["accent_soft"],
             text_color=C["btn_text"], height=44, corner_radius=10,
             command=self._start
         )
-        self.start_btn.pack(fill="x", pady=(0, 8))
+        self.start_btn.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         
         self.stop_btn = ctk.CTkButton(
-            ctrl_inner, text="Stop",
+            btn_row, text="Stop",
             font=ctk.CTkFont(size=15),
             fg_color="transparent", hover_color=C["elevated"],
             border_width=1, border_color=C["border"],
             text_color=C["text_dim"], height=44, corner_radius=10,
             command=self._stop, state="disabled"
         )
-        self.stop_btn.pack(fill="x")
+        self.stop_btn.grid(row=0, column=1, sticky="ew", padx=(8, 0))
         
         self.state_lbl = ctk.CTkLabel(
             ctrl_inner, text="● Idle",
@@ -338,47 +287,6 @@ class App(ctk.CTk):
             text_color=C["text_muted"]
         )
         self.state_lbl.pack(pady=(12, 0))
-        
-        # ─────────────────────────────────────
-        # LOG SECTION
-        # ─────────────────────────────────────
-        self.log_card = ctk.CTkFrame(
-            pad, fg_color=C["surface"],
-            corner_radius=14, border_width=1, border_color=C["border"]
-        )
-        self.log_card.pack(fill="both", expand=True)
-        
-        log_head = ctk.CTkFrame(self.log_card, fg_color="transparent")
-        log_head.pack(fill="x", padx=24, pady=(18, 12))
-        
-        self.history_lbl = ctk.CTkLabel(
-            log_head, text="Analysis History",
-            font=ctk.CTkFont(size=15, weight="bold"),
-            text_color=C["text_dim"]
-        )
-        self.history_lbl.pack(side="left")
-        
-        self.cnt_lbl = ctk.CTkLabel(
-            log_head, text="0 frames",
-            font=ctk.CTkFont(size=14),
-            text_color=C["text_muted"]
-        )
-        self.cnt_lbl.pack(side="right")
-        
-        self.log_scroll = ctk.CTkScrollableFrame(
-            self.log_card, fg_color=C["elevated"],
-            corner_radius=10
-        )
-        self.log_scroll.pack(fill="both", expand=True, padx=20, pady=(0, 18))
-        
-        # Log header row
-        hdr = ctk.CTkFrame(self.log_scroll, fg_color="transparent")
-        hdr.pack(fill="x", pady=(8, 6), padx=8)
-        ctk.CTkLabel(hdr, text="TIME", width=80, font=ctk.CTkFont(size=11), text_color=C["text_muted"]).pack(side="left")
-        ctk.CTkLabel(hdr, text="RESULT", width=110, font=ctk.CTkFont(size=11), text_color=C["text_muted"]).pack(side="left", padx=(20,0))
-        ctk.CTkLabel(hdr, text="CONF", font=ctk.CTkFont(size=11), text_color=C["text_muted"]).pack(side="left", padx=(20,0))
-        
-        self._log_entries = []
         
     # ─────────────────────────────────────
     # WAVEFORM ANIMATION
@@ -459,7 +367,7 @@ class App(ctk.CTk):
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
         self.state_lbl.configure(text="● Monitoring", text_color=C["accent"])
-        self._clear_log()
+        self.frames_lbl.configure(text="0 frames recorded")
         
         # Initialize real components
         self._audio_recorder = AudioRecorder(frame_duration=3.0, samplerate=48000)
@@ -498,15 +406,12 @@ class App(ctk.CTk):
         self.state_lbl.configure(text="● Idle", text_color=C["text_muted"])
         self._stop_wave()
         self._reset_status()
-        self.alert_frame.pack_forget()
         self.call_frame.pack_forget()
         
     def _reset_status(self):
         self.status_lbl.configure(text="READY", text_color=C["text_muted"])
-        self.conf_lbl.configure(text="—")
+        self.frames_lbl.configure(text="0 frames recorded")
         self.desc_lbl.configure(text="Press Start to begin monitoring")
-        self.prog.set(0)
-        self.pct_lbl.configure(text="0%", text_color=C["accent"])
         
     # ─────────────────────────────────────
     # FRAME PROCESSING LOOP
@@ -525,10 +430,9 @@ class App(ctk.CTk):
                 # Save audio frame to temp folder
                 self._save_audio_frame(frame)
                 
-                # TODO: Replace with real AI model inference
-                result = self._analyze_frame_placeholder(frame)
-                
-                self._update_analysis_ui(result)
+                # Update frame counter in UI
+                word = "frame" if self._frames_processed == 1 else "frames"
+                self.frames_lbl.configure(text=f"{self._frames_processed} {word} recorded")
                 
         self._job = self.after(100, self._process_frames)
     
@@ -546,81 +450,7 @@ class App(ctk.CTk):
             print(f"[Recording] Saved: {filename}")
         except Exception as e:
             print(f"[Recording] Error saving frame: {e}")
-    
-    def _analyze_frame_placeholder(self, frame) -> dict:
-        """
-        PLACEHOLDER: Analyze audio frame for AI voice.
-        Replace with actual TFLite model inference.
-        """
-        # Current placeholder: random result weighted toward human
-        r = random.choices([0, 1, 2], weights=[0.6, 0.25, 0.15])[0]
-        if r == 0:
-            conf = random.randint(5, 35)
-        elif r == 1:
-            conf = random.randint(40, 65)
-        else:
-            conf = random.randint(70, 95)
-            
-        return {
-            "confidence": conf,
-            "frame_samples": len(frame) if hasattr(frame, '__len__') else 0
-        }
-    
-    def _update_analysis_ui(self, result: dict):
-        """Update UI with analysis result."""
-        conf = result["confidence"]
         
-        # Determine status
-        if conf < 40:
-            status, color = "HUMAN", C["safe"]
-            desc = "Natural speech patterns confirmed"
-            self.alert_frame.pack_forget()
-        elif conf < 70:
-            status, color = "SUSPICIOUS", C["warn"]
-            desc = "Anomalies detected in voice pattern"
-            self.alert_frame.pack_forget()
-            if self._last != "SUSPICIOUS":
-                notify("⚡ Suspicious", f"{conf}% confidence — review needed")
-        else:
-            status, color = "AI DETECTED", C["alert"]
-            desc = "High probability of synthetic voice"
-            self.alert_frame.pack(fill="x", pady=(0, 16), before=self.status_card)
-            if self._last != "AI DETECTED":
-                notify("🚨 AI Detected", f"{conf}% confidence — potential fraud")
-                
-        self._last = status
-        
-        # Update UI
-        self.status_lbl.configure(text=status, text_color=color)
-        self.conf_lbl.configure(text=f"{conf}% confidence")
-        self.desc_lbl.configure(text=desc)
-        
-        self.prog.set(conf / 100)
-        self.prog.configure(progress_color=color)
-        self.pct_lbl.configure(text=f"{conf}%", text_color=color)
-        
-        self._add_log(status, conf, color)
-        self.cnt_lbl.configure(text=f"{self._frames_processed} frames")
-        
-    # ─────────────────────────────────────
-    # LOG
-    # ─────────────────────────────────────
-    def _add_log(self, status: str, conf: int, color: str):
-        row = ctk.CTkFrame(self.log_scroll, fg_color="transparent")
-        row.pack(fill="x", pady=3, padx=8)
-        
-        t = datetime.now().strftime("%H:%M:%S")
-        ctk.CTkLabel(row, text=t, width=80, font=ctk.CTkFont(family="Consolas", size=13), text_color=C["text_dim"]).pack(side="left")
-        ctk.CTkLabel(row, text=status, width=110, font=ctk.CTkFont(size=13, weight="bold"), text_color=color).pack(side="left", padx=(20,0))
-        ctk.CTkLabel(row, text=f"{conf}%", font=ctk.CTkFont(size=13), text_color=C["text_dim"]).pack(side="left", padx=(20,0))
-        
-        self._log_entries.append(row)
-        
-    def _clear_log(self):
-        for e in self._log_entries:
-            e.destroy()
-        self._log_entries = []
-        self.cnt_lbl.configure(text="0 frames")
     
     # ─────────────────────────────────────
     # THEME TOGGLE
@@ -664,27 +494,14 @@ class App(ctk.CTk):
         self.call_frame.configure(fg_color=C["surface"], border_color=C["accent"])
         self.call_label.configure(text_color=C["accent"])
         
-        # Alert frame
-        self.alert_frame.configure(fg_color=C["surface"], border_color=C["alert"])
-        self.alert_label.configure(text_color=C["alert"])
-        
         # Status card
         self.status_card.configure(fg_color=C["surface"], border_color=C["border"])
         
         # Status labels (only update color if not running)
         if not self._running:
             self.status_lbl.configure(text_color=C["text_muted"])
-        self.conf_lbl.configure(text_color=C["text_dim"])
+        self.frames_lbl.configure(text_color=C["text_dim"])
         self.desc_lbl.configure(text_color=C["text_muted"])
-        
-        # Meter card
-        self.meter_card.configure(fg_color=C["surface"], border_color=C["border"])
-        self.prob_lbl.configure(text_color=C["text_dim"])
-        
-        # Progress bar
-        self.prog.configure(fg_color=C["elevated"])
-        if not self._running:
-            self.pct_lbl.configure(text_color=C["accent"])
         
         # Controls card
         self.ctrl_card.configure(fg_color=C["surface"], border_color=C["border"])
@@ -704,16 +521,6 @@ class App(ctk.CTk):
         # State label
         if not self._running:
             self.state_lbl.configure(text_color=C["text_muted"])
-        
-        # Log card
-        self.log_card.configure(fg_color=C["surface"], border_color=C["border"])
-        self.history_lbl.configure(text_color=C["text_dim"])
-        
-        # Log scroll
-        self.log_scroll.configure(fg_color=C["elevated"])
-        
-        # Count label
-        self.cnt_lbl.configure(text_color=C["text_muted"])
 
 
 if __name__ == "__main__":
