@@ -9,7 +9,7 @@ with sc.get_microphone(id=sc.default_speaker().name, include_loopback=True).reco
 ) as mic:
 
     print("Recording dawg...")
-    data = mic.record(numframes=samplerate * 6.5)  # 2 seconds
+    data = mic.record(numframes=samplerate * 2)
     print("Done.")
 
 write("output.wav", samplerate, data)

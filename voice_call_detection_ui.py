@@ -3,12 +3,23 @@ Real-Time AI Voice Call Detection
 ==================================
 Premium, classy dark UI with refined aesthetics.
 
-⚠️ DEMO MODE — Mocked behavior only.
+Now with REAL VoIP call detection and audio recording!
 """
 
 import customtkinter as ctk
 import random
+import shutil
+import sys
+import os
 from datetime import datetime
+from scipy.io.wavfile import write as write_wav
+import numpy as np
+
+# Add parent dir to path for module imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from modules.audio_recorder import AudioRecorder
+from modules.voip_monitor import VoIPMonitor
 
 # Notifications
 try:
@@ -98,7 +109,38 @@ class App(ctk.CTk):
         self._job = None
         self._is_dark_mode = True  # Track current theme
         
+        # Real VoIP monitoring components
+        self._voip_monitor: VoIPMonitor | None = None
+        self._audio_recorder: AudioRecorder | None = None
+        self._call_active = False
+        self._frames_processed = 0
+        
+        # Temp folder for audio clips
+        self._temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp")
+        self._setup_temp_folder()
+        
         self._build_ui()
+        
+        # Cleanup on close
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        
+    def _on_close(self):
+        """Clean up resources before closing."""
+        self._stop()
+        self._cleanup_temp_folder()
+        self.destroy()
+    
+    def _setup_temp_folder(self):
+        """Create temp folder for audio clips."""
+        if os.path.exists(self._temp_dir):
+            shutil.rmtree(self._temp_dir)
+        os.makedirs(self._temp_dir, exist_ok=True)
+        
+    def _cleanup_temp_folder(self):
+        """Remove temp folder and all audio clips."""
+        if os.path.exists(self._temp_dir):
+            shutil.rmtree(self._temp_dir)
+            print(f"[Cleanup] Removed temp folder with {self._frames_processed} audio clips")
         
     def _build_ui(self):
         # Main padding
@@ -153,6 +195,21 @@ class App(ctk.CTk):
         self._wave_active = False
         
         # ─────────────────────────────────────
+        # CALL DETECTION BANNER
+        # ─────────────────────────────────────
+        self.call_frame = ctk.CTkFrame(
+            pad, fg_color=C["surface"],
+            corner_radius=10, border_width=1, border_color=C["accent"]
+        )
+        self.call_label = ctk.CTkLabel(
+            self.call_frame, 
+            text="📞  VoIP Call Detected — Recording Active",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=C["accent"]
+        )
+        self.call_label.pack(pady=14, padx=24)
+        
+        # ─────────────────────────────────────
         # ALERT BANNER (hidden initially)
         # ─────────────────────────────────────
         self.alert_frame = ctk.CTkFrame(
@@ -198,7 +255,7 @@ class App(ctk.CTk):
         div.pack(pady=20)
         
         self.desc_lbl = ctk.CTkLabel(
-            inner, text="Press Start to begin analysis",
+            inner, text="Press Start to begin monitoring",
             font=ctk.CTkFont(size=14),
             text_color=C["text_muted"]
         )
@@ -226,7 +283,7 @@ class App(ctk.CTk):
         meter_head.pack(fill="x")
         
         self.prob_lbl = ctk.CTkLabel(
-            meter_head, text="Probability",
+            meter_head, text="AI Probability",
             font=ctk.CTkFont(size=14),
             text_color=C["text_dim"]
         )
@@ -257,7 +314,7 @@ class App(ctk.CTk):
         ctrl_inner.pack(fill="both", expand=True, padx=20, pady=20)
         
         self.start_btn = ctk.CTkButton(
-            ctrl_inner, text="Start",
+            ctrl_inner, text="Start Monitoring",
             font=ctk.CTkFont(size=15, weight="bold"),
             fg_color=C["accent"], hover_color=C["accent_soft"],
             text_color=C["btn_text"], height=44, corner_radius=10,
@@ -295,14 +352,14 @@ class App(ctk.CTk):
         log_head.pack(fill="x", padx=24, pady=(18, 12))
         
         self.history_lbl = ctk.CTkLabel(
-            log_head, text="History",
+            log_head, text="Analysis History",
             font=ctk.CTkFont(size=15, weight="bold"),
             text_color=C["text_dim"]
         )
         self.history_lbl.pack(side="left")
         
         self.cnt_lbl = ctk.CTkLabel(
-            log_head, text="0",
+            log_head, text="0 frames",
             font=ctk.CTkFont(size=14),
             text_color=C["text_muted"]
         )
@@ -357,52 +414,162 @@ class App(ctk.CTk):
         self._draw_wave()
         
     # ─────────────────────────────────────
+    # VOIP CALLBACKS
+    # ─────────────────────────────────────
+    def _on_call_start(self):
+        """Called when a VoIP call is detected."""
+        self._call_active = True
+        self.after(0, self._update_call_ui, True)
+        
+        # Start recording
+        if self._audio_recorder:
+            self._audio_recorder.start()
+            
+        notify("📞 Call Detected", "VoIP call started — recording audio")
+    
+    def _on_call_end(self):
+        """Called when VoIP call ends."""
+        self._call_active = False
+        self.after(0, self._update_call_ui, False)
+        
+        # Stop recording
+        if self._audio_recorder:
+            self._audio_recorder.stop()
+            
+        notify("📴 Call Ended", f"Processed {self._frames_processed} frames")
+    
+    def _update_call_ui(self, call_active: bool):
+        """Update UI based on call state (runs on main thread)."""
+        if call_active:
+            self.call_frame.pack(fill="x", pady=(0, 16), before=self.status_card)
+            self.desc_lbl.configure(text="Recording call audio...")
+            self._start_wave()
+        else:
+            self.call_frame.pack_forget()
+            self.desc_lbl.configure(text="Waiting for VoIP call...")
+            self._stop_wave()
+        
+    # ─────────────────────────────────────
     # CONTROLS
     # ─────────────────────────────────────
     def _start(self):
         self._running = True
         self._last = None
+        self._frames_processed = 0
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
-        self.state_lbl.configure(text="● Analyzing", text_color=C["accent"])
+        self.state_lbl.configure(text="● Monitoring", text_color=C["accent"])
         self._clear_log()
-        self._start_wave()
-        self._tick()
+        
+        # Initialize real components
+        self._audio_recorder = AudioRecorder(frame_duration=3.0, samplerate=48000)
+        self._voip_monitor = VoIPMonitor(
+            poll_interval=1.0,
+            on_call_start=self._on_call_start,
+            on_call_end=self._on_call_end
+        )
+        self._voip_monitor.start()
+        
+        self.status_lbl.configure(text="MONITORING", text_color=C["accent"])
+        self.desc_lbl.configure(text="Waiting for VoIP call...")
+        
+        # Start processing loop
+        self._process_frames()
         
     def _stop(self):
         self._running = False
+        
+        # Stop VoIP monitor
+        if self._voip_monitor:
+            self._voip_monitor.stop()
+            self._voip_monitor = None
+            
+        # Stop audio recorder
+        if self._audio_recorder:
+            self._audio_recorder.stop()
+            self._audio_recorder = None
+        
         if self._job:
             self.after_cancel(self._job)
+            self._job = None
+            
         self.start_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
         self.state_lbl.configure(text="● Idle", text_color=C["text_muted"])
         self._stop_wave()
         self._reset_status()
         self.alert_frame.pack_forget()
+        self.call_frame.pack_forget()
         
     def _reset_status(self):
         self.status_lbl.configure(text="READY", text_color=C["text_muted"])
         self.conf_lbl.configure(text="—")
-        self.desc_lbl.configure(text="Press Start to begin analysis")
+        self.desc_lbl.configure(text="Press Start to begin monitoring")
         self.prog.set(0)
         self.pct_lbl.configure(text="0%", text_color=C["accent"])
         
     # ─────────────────────────────────────
-    # MOCK UPDATE LOOP
+    # FRAME PROCESSING LOOP
     # ─────────────────────────────────────
-    def _tick(self):
+    def _process_frames(self):
+        """Check for new audio frames and process them."""
         if not self._running:
             return
             
-        # Generate weighted random confidence
-        r = random.choices([0, 1, 2], weights=[0.5, 0.28, 0.22])[0]
-        if r == 0:
-            conf = random.randint(8, 36)
-        elif r == 1:
-            conf = random.randint(44, 66)
-        else:
-            conf = random.randint(74, 94)
+        if self._audio_recorder and self._call_active:
+            frame = self._audio_recorder.get_frame(timeout=0.05)
             
+            if frame is not None:
+                self._frames_processed += 1
+                
+                # Save audio frame to temp folder
+                self._save_audio_frame(frame)
+                
+                # TODO: Replace with real AI model inference
+                result = self._analyze_frame_placeholder(frame)
+                
+                self._update_analysis_ui(result)
+                
+        self._job = self.after(100, self._process_frames)
+    
+    def _save_audio_frame(self, frame):
+        """Save audio frame as WAV file to temp folder."""
+        try:
+            timestamp = datetime.now().strftime("%H%M%S_%f")[:-3]  # HH:MM:SS_mmm
+            filename = f"frame_{self._frames_processed:04d}_{timestamp}.wav"
+            filepath = os.path.join(self._temp_dir, filename)
+            
+            # Convert to int16 for WAV
+            audio_data = (frame * 32767).astype(np.int16)
+            write_wav(filepath, 48000, audio_data)
+            
+            print(f"[Recording] Saved: {filename}")
+        except Exception as e:
+            print(f"[Recording] Error saving frame: {e}")
+    
+    def _analyze_frame_placeholder(self, frame) -> dict:
+        """
+        PLACEHOLDER: Analyze audio frame for AI voice.
+        Replace with actual TFLite model inference.
+        """
+        # Current placeholder: random result weighted toward human
+        r = random.choices([0, 1, 2], weights=[0.6, 0.25, 0.15])[0]
+        if r == 0:
+            conf = random.randint(5, 35)
+        elif r == 1:
+            conf = random.randint(40, 65)
+        else:
+            conf = random.randint(70, 95)
+            
+        return {
+            "confidence": conf,
+            "frame_samples": len(frame) if hasattr(frame, '__len__') else 0
+        }
+    
+    def _update_analysis_ui(self, result: dict):
+        """Update UI with analysis result."""
+        conf = result["confidence"]
+        
         # Determine status
         if conf < 40:
             status, color = "HUMAN", C["safe"]
@@ -433,8 +600,7 @@ class App(ctk.CTk):
         self.pct_lbl.configure(text=f"{conf}%", text_color=color)
         
         self._add_log(status, conf, color)
-        
-        self._job = self.after(random.randint(2200, 3200), self._tick)
+        self.cnt_lbl.configure(text=f"{self._frames_processed} frames")
         
     # ─────────────────────────────────────
     # LOG
@@ -449,13 +615,12 @@ class App(ctk.CTk):
         ctk.CTkLabel(row, text=f"{conf}%", font=ctk.CTkFont(size=13), text_color=C["text_dim"]).pack(side="left", padx=(20,0))
         
         self._log_entries.append(row)
-        self.cnt_lbl.configure(text=str(len(self._log_entries)))
         
     def _clear_log(self):
         for e in self._log_entries:
             e.destroy()
         self._log_entries = []
-        self.cnt_lbl.configure(text="0")
+        self.cnt_lbl.configure(text="0 frames")
     
     # ─────────────────────────────────────
     # THEME TOGGLE
@@ -494,6 +659,10 @@ class App(ctk.CTk):
         # Header
         self.title_lbl.configure(text_color=C["text"])
         self.sub_lbl.configure(text_color=C["text_muted"])
+        
+        # Call frame
+        self.call_frame.configure(fg_color=C["surface"], border_color=C["accent"])
+        self.call_label.configure(text_color=C["accent"])
         
         # Alert frame
         self.alert_frame.configure(fg_color=C["surface"], border_color=C["alert"])
