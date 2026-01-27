@@ -1,0 +1,18 @@
+# Das-Detects Requirements
+# VoIP Call Detection and Audio Recording System
+
+# GUI Framework
+customtkinter>=5.2.0
+
+# Audio Processing
+soundcard>=0.4.2
+scipy>=1.11.0
+numpy>=1.24.0
+
+# Process and Audio Session Detection (Windows)
+pycaw>=20230407
+psutil>=5.9.0
+comtypes>=1.2.0
+
+# Desktop Notifications (optional)
+plyer>=2.1.0

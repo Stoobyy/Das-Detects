@@ -373,6 +373,7 @@ class App(ctk.CTk):
         self._audio_recorder = AudioRecorder(frame_duration=3.0, samplerate=48000)
         self._voip_monitor = VoIPMonitor(
             poll_interval=1.0,
+            require_mic=True,  # Only trigger when mic is also active (confirmed call)
             on_call_start=self._on_call_start,
             on_call_end=self._on_call_end
         )
