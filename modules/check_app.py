@@ -158,44 +158,66 @@ def _get_voip_pids_with_mic_input():
     return voip_mic_pids
 
 
-def detect_any_mic_activity(threshold: float = 0.0001, sample_duration: float = 0.15):
+def detect_any_mic_activity():
     """
-    Check if the microphone has any signal (indicating it's being used for a call).
+    Check if ANY process is actively using the microphone.
+    Returns True if microphone is in use, False otherwise.
     
-    Uses soundcard to sample mic and detect any activity above noise floor.
-    During a call, even silence has some mic activity from background noise/processing.
-    
-    Returns True if mic has signal above threshold, False otherwise.
+    Uses Windows Registry CapabilityAccessManager as the primary method,
+    which reliably tracks mic usage across all apps.
     """
     try:
-        import soundcard as sc
-        import numpy as np
-        import warnings
+        import winreg
         
-        # Suppress soundcard warnings
-        warnings.filterwarnings("ignore", message="data discontinuity")
+        # Registry path where Windows tracks microphone access
+        base_path = r"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone"
         
-        # Get default microphone
-        default_mic = sc.default_microphone()
-        if default_mic is None:
+        # Get list of running process names for verification
+        running_processes = set()
+        for proc in psutil.process_iter(['name']):
+            try:
+                running_processes.add(proc.info['name'].lower())
+            except:
+                pass
+        
+        def check_key_for_active_mic(key_path):
+            """Check a registry key for active mic usage"""
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+                    try:
+                        start_time, _ = winreg.QueryValueEx(key, "LastUsedTimeStart")
+                        stop_time, _ = winreg.QueryValueEx(key, "LastUsedTimeStop")
+                        
+                        # Mic is IN USE when start > stop (started but not yet stopped)
+                        if start_time > stop_time:
+                            # For NonPackaged apps, verify process is running
+                            key_name = key_path.split("\\")[-1]
+                            if "#" in key_name:
+                                exe_name = key_name.split("#")[-1].lower()
+                                if exe_name in running_processes:
+                                    return True
+                            else:
+                                # Packaged app (UWP) - always valid
+                                return True
+                    except FileNotFoundError:
+                        pass
+                    
+                    # Check subkeys
+                    try:
+                        i = 0
+                        while True:
+                            subkey_name = winreg.EnumKey(key, i)
+                            subkey_path = f"{key_path}\\{subkey_name}"
+                            if check_key_for_active_mic(subkey_path):
+                                return True
+                            i += 1
+                    except OSError:
+                        pass
+            except (FileNotFoundError, PermissionError):
+                pass
             return False
         
-        # Sample mic
-        samplerate = 16000
-        num_frames = int(samplerate * sample_duration)
-        
-        with default_mic.recorder(samplerate=samplerate) as recorder:
-            data = recorder.record(numframes=num_frames)
-        
-        # Convert to mono if stereo
-        if len(data.shape) > 1:
-            data = np.mean(data, axis=1)
-        
-        # Calculate RMS (audio energy level)
-        rms = np.sqrt(np.mean(data ** 2))
-        
-        # Very low threshold - catches any mic activity
-        return rms > threshold
+        return check_key_for_active_mic(base_path)
         
     except Exception:
         return False
@@ -203,19 +225,22 @@ def detect_any_mic_activity(threshold: float = 0.0001, sample_duration: float = 
 
 def detect_voip_sources():
     """
-    Detect VoIP apps that are ACTIVELY playing audio.
+    Detect VoIP apps that have an active audio session OR are running with mic active.
     
     Returns list of detected VoIP sources with PID, name, and process chain.
-    Only matches apps in State=1 (AudioSessionStateActive), meaning they
-    are currently outputting audio, not just have an open session.
+    Uses multiple detection methods:
+    1. Audio session detection - only State=1 (actually playing audio)
+    2. Running process + mic active detection (fallback for UWP apps)
     """
     sessions = AudioUtilities.GetAllSessions()
     detected = []
+    detected_pids = set()
 
+    # Method 1: Check audio sessions - only ACTIVE sessions (State=1)
     for s in sessions:
         try:
             # Only match ACTIVE sessions (actually playing audio NOW)
-            # State 0 = Inactive, State 1 = Active, State 2 = Expired
+            # This prevents detecting apps that just have a session open
             if s.State != 1:
                 continue
                 
@@ -237,9 +262,31 @@ def detect_voip_sources():
                     "name": name,
                     "chain": chain
                 })
+                detected_pids.add(pid)
 
         except Exception:
             continue
+
+    # Method 2: Fallback - check running VoIP processes with mic active
+    # This catches UWP apps like WhatsApp that don't create standard audio sessions
+    if detect_any_mic_activity():
+        for proc in psutil.process_iter(['pid', 'name']):
+            try:
+                name = proc.info['name'].lower()
+                pid = proc.info['pid']
+                
+                if pid in detected_pids:
+                    continue  # Already detected via audio session
+                
+                if any(key in name for key in VOIP_KEYWORDS):
+                    chain = [p.name().lower() for p in psutil.Process(pid).parents()] + [name]
+                    detected.append({
+                        "pid": pid,
+                        "name": name,
+                        "chain": chain
+                    })
+            except Exception:
+                continue
 
     return detected
 
