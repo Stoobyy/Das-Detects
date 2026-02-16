@@ -1,0 +1,107 @@
+You are a senior software engineer AI helping with an AI voice detection system project.
+
+## Project Goal
+Build a lightweight, real-time binary classifier to detect AI-generated/synthetic speech vs genuine human speech on WhatsApp VoIP calls. The system must work offline on desktop via TensorFlow Lite.
+
+## Technical Requirements
+- Real-time inference (<100ms per 2.5-second window)
+- Offline operation (no cloud dependency)
+- VoIP-grade audio (16 kHz mono)
+- TFLite model <1MB (quantized ~400KB)
+- Target accuracy >85%, false positive rate <10%
+
+## Model Architecture
+MobileNet-style CNN with depthwise separable convolutions:
+
+```
+Input: LFCC spectrogram (60, 79, 1) from 2.5s audio
+
+Block 1: Conv2D(16, 3x3, stride=2) + BN + ReLU6
+Block 2: DepthwiseSeparable(32) + BN + ReLU6 + MaxPool
+Block 3: DepthwiseSeparable(64) + BN + ReLU6 + MaxPool
+Block 4: DepthwiseSeparable(128) + BN + ReLU6 + MaxPool
+
+GlobalAveragePooling2D
+Dense(64) + ReLU6 + Dropout(0.3)
+Dense(1, sigmoid)
+```
+
+Parameters: ~300-500K
+Inference: 30-50ms on CPU
+
+## Feature Extraction
+Using Linear Frequency Cepstral Coefficients (LFCC) instead of Mel spectrograms because:
+- Linear filterbanks better preserve high-frequency artifacts common in AI speech
+- Proven effective in ASVspoof challenges
+- Computationally efficient
+
+LFCC Config:
+- N_FFT = 512
+- HOP_LENGTH = 160 (10ms hop at 16kHz)
+- WIN_LENGTH = 400 (25ms window)
+- N_LFCC = 60 coefficients
+- N_FILTERS = 80 linear filters
+
+## Datasets
+Location: D:\datasets
+
+**AI/Spoof Audio:**
+- ASVspoof dataset (spoofed/synthetic voices)
+
+**Human Audio (two variants being tested):**
+1. ASVspoof bonafide (genuine human recordings from ASVspoof)
+2. VCTK corpus (110 speakers, balanced human dataset)
+
+Current training uses balanced dataset: ~48k samples (24k human, 24k AI)
+
+## Opus Codec Augmentation (Key Experiment)
+WhatsApp uses Opus codec for VoIP calls. We're testing different ratios of Opus-encoded samples during training to improve model generalization to real WhatsApp audio.
+
+Opus encoding simulates WhatsApp compression by:
+1. Encoding audio to Opus at WhatsApp-like bitrates (16k, 24k, 32k)
+2. Decoding back to WAV
+3. This degrades audio quality similar to real VoIP calls
+
+**Experiments & Results:**
+
+| Opus Ratio | Accuracy | F1 Score | EER | Notes |
+|------------|----------|----------|-----|-------|
+| 0.0 (none) | Baseline | - | - | No VoIP simulation |
+| 0.5 | 81.3% | 80.8% | 19.0% | Better than baseline |
+| 0.8 | Testing | - | - | Currently running |
+
+Finding: Opus augmentation at 0.5 ratio improved results over no augmentation. Testing if higher ratio (0.8) gives further improvement.
+
+## Training Config
+- Batch size: 32-64
+- Epochs: 50 (with early stopping, patience=10)
+- Learning rate: 1e-3 with ReduceLROnPlateau
+- Label smoothing: 0.1
+- Optimizer: Adam
+- Loss: Binary crossentropy
+- Data split: 70% train, 20% val, 10% test
+
+## Project Structure
+```
+claude_workspace/
+├── config.py                    # Configuration constants
+├── features/                    # Feature extraction (LFCC)
+├── models/                      # MobileNet-style CNN
+├── data/                        # Data pipeline & augmentation
+├── training/                    # Training loop & metrics
+├── inference/                   # TFLite predictor
+└── scripts/                     # CLI scripts
+    ├── train_from_features.py   # Train from pre-extracted features
+    ├── prepare_opus_dataset.py  # Prepare dataset with Opus augmentation
+    └── prepare_opus_dataset_fast.py  # Parallel version (faster)
+```
+
+
+## Evaluation Metrics
+- Accuracy: Overall classification accuracy
+- Precision/Recall: For AI class detection
+- FAR (False Acceptance Rate): AI classified as human
+- FRR (False Rejection Rate): Human classified as AI
+- EER (Equal Error Rate): Point where FAR = FRR (lower is better)
+
+

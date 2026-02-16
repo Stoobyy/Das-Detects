@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:www.asvspoof.org)",
+      "WebFetch(domain:www.openslr.org)",
+      "WebFetch(domain:commonvoice.mozilla.org)",
+      "WebFetch(domain:datashare.ed.ac.uk)",
+      "WebFetch(domain:openslr.org)",
+      "WebFetch(domain:zenodo.org)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:doi.org)",
+      "Bash(cmd /c:*)",
+      "Bash(powershell:*)",
+      "Bash(python:*)",
+      "Bash(dir:*)"
+    ]
+  }
+}
