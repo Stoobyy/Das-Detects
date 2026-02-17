@@ -3,13 +3,15 @@ Real-Time AI Voice Call Detection
 ==================================
 Premium, classy dark UI with refined aesthetics.
 
-Now with REAL VoIP call detection and audio recording!
+Now with REAL VoIP call detection, audio recording,
+and live TFLite AI-voice inference!
 """
 
 import customtkinter as ctk
 import shutil
 import sys
 import os
+import random
 from datetime import datetime
 from scipy.io.wavfile import write as write_wav
 import numpy as np
@@ -19,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from modules.audio_recorder import AudioRecorder
 from modules.voip_monitor import VoIPMonitor
+from modules.tflite_inferencer import TFLiteVoiceClassifier, silence_ratio
 
 # Notifications
 try:
@@ -94,6 +97,13 @@ LIGHT_THEME = {
 C = DARK_THEME.copy()
 
 
+# Path to the quantised TFLite model (relative to this script)
+_MODEL_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "models", "voice_classifier.tflite",
+)
+
+
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -113,6 +123,12 @@ class App(ctk.CTk):
         self._audio_recorder: AudioRecorder | None = None
         self._call_active = False
         self._frames_processed = 0
+        self._last_confidence = 0.0
+        self._last_classification = "—"
+        
+        # Auto-load the TFLite model at startup
+        self._classifier: TFLiteVoiceClassifier | None = None
+        self._load_model()
         
         # Temp folder for audio clips
         self._temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp")
@@ -123,6 +139,15 @@ class App(ctk.CTk):
         # Cleanup on close
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         
+    def _load_model(self):
+        """Pre-load the TFLite AI voice classifier."""
+        try:
+            self._classifier = TFLiteVoiceClassifier(_MODEL_PATH)
+            print(f"[Model] Loaded OK: {_MODEL_PATH}")
+        except Exception as e:
+            print(f"[Model] FAILED to load: {e}")
+            self._classifier = None
+    
     def _on_close(self):
         """Clean up resources before closing."""
         self._stop()
@@ -234,6 +259,34 @@ class App(ctk.CTk):
         )
         self.frames_lbl.pack(pady=(8, 0))
         
+        # Confidence Score Display
+        self.confidence_frame = ctk.CTkFrame(inner, fg_color=C["elevated"], corner_radius=8)
+        self.confidence_frame.pack(pady=(16, 0), fill="x")
+        
+        self.confidence_lbl = ctk.CTkLabel(
+            self.confidence_frame, text="Confidence: —",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            text_color=C["accent"]
+        )
+        self.confidence_lbl.pack(pady=(12, 4))
+        
+        self.classification_lbl = ctk.CTkLabel(
+            self.confidence_frame, text="Classification: —",
+            font=ctk.CTkFont(size=14),
+            text_color=C["text_dim"]
+        )
+        self.classification_lbl.pack(pady=(0, 12))
+        
+        # Model status indicator
+        model_status = "✓ Model loaded" if self._classifier else "✗ Model not found"
+        model_color  = C["safe"] if self._classifier else C["alert"]
+        self.model_lbl = ctk.CTkLabel(
+            inner, text=model_status,
+            font=ctk.CTkFont(size=11),
+            text_color=model_color
+        )
+        self.model_lbl.pack(pady=(8, 0))
+        
         # Thin divider
         div = ctk.CTkFrame(inner, height=1, fg_color=C["border"], width=200)
         div.pack(pady=20)
@@ -343,8 +396,12 @@ class App(ctk.CTk):
         # Stop recording
         if self._audio_recorder:
             self._audio_recorder.stop()
-            
-        notify("📴 Call Ended", f"Processed {self._frames_processed} frames")
+        
+        # Final summary notification
+        if self._frames_processed > 0:
+            notify("📴 Call Ended", f"Analyzed {self._frames_processed} frames\nLast: {self._last_classification} ({self._last_confidence:.1f}%)")
+        else:
+            notify("📴 Call Ended", "No audio frames captured")
     
     def _update_call_ui(self, call_active: bool):
         """Update UI based on call state (runs on main thread)."""
@@ -413,15 +470,17 @@ class App(ctk.CTk):
         self.status_lbl.configure(text="READY", text_color=C["text_muted"])
         self.frames_lbl.configure(text="0 frames recorded")
         self.desc_lbl.configure(text="Press Start to begin monitoring")
+        self.confidence_lbl.configure(text="Confidence: —", text_color=C["accent"])
+        self.classification_lbl.configure(text="Classification: —", text_color=C["text_dim"])
         
     # ─────────────────────────────────────
     # FRAME PROCESSING LOOP
     # ─────────────────────────────────────
     def _process_frames(self):
-        """Check for new audio frames and process them."""
+        """Check for new audio frames, run inference, and update UI."""
         if not self._running:
             return
-            
+        
         if self._audio_recorder and self._call_active:
             frame = self._audio_recorder.get_frame(timeout=0.05)
             
@@ -431,10 +490,51 @@ class App(ctk.CTk):
                 # Save audio frame to temp folder
                 self._save_audio_frame(frame)
                 
-                # Update frame counter in UI
-                word = "frame" if self._frames_processed == 1 else "frames"
-                self.frames_lbl.configure(text=f"{self._frames_processed} {word} recorded")
+                # Drop mostly-silent frames (>40% silence)
+                sr = silence_ratio(frame, sr=48000)
+                if sr > 0.4:
+                    print(f"[Skip] Frame {self._frames_processed} — {sr*100:.0f}% silent")
+                elif self._classifier:
+                    self._classifier.submit(frame, source_sr=48000)
+        
+        # Poll for inference results (non-blocking)
+        if self._classifier:
+            result = self._classifier.get_result(timeout=0.01)
+            if result is not None:
+                confidence, label, ms = result
+                self._last_confidence = confidence
+                self._last_classification = label
                 
+                # Pick colour based on classification
+                if label == "HUMAN":
+                    conf_color = C["safe"]
+                elif label == "SUSPICIOUS":
+                    conf_color = C["warn"]
+                else:
+                    conf_color = C["alert"]
+                
+                # Update confidence UI
+                self.confidence_lbl.configure(
+                    text=f"Confidence: {confidence:.1f}%",
+                    text_color=conf_color
+                )
+                self.classification_lbl.configure(
+                    text=f"Classification: {label}",
+                    text_color=conf_color
+                )
+                
+                # Update frame counter
+                word = "frame" if self._frames_processed == 1 else "frames"
+                self.frames_lbl.configure(text=f"{self._frames_processed} {word} analyzed")
+                
+                # Notify on detections
+                if label == "AI":
+                    notify("🚨 AI Voice Detected", f"Confidence: {confidence:.1f}%")
+                elif label == "SUSPICIOUS":
+                    notify("⚠ Suspicious Voice", f"Confidence: {confidence:.1f}%")
+                
+                print(f"[Inference] {label} | {confidence:.1f}% | {ms:.1f}ms")
+        
         self._job = self.after(100, self._process_frames)
     
     def _save_audio_frame(self, frame):
@@ -503,6 +603,12 @@ class App(ctk.CTk):
             self.status_lbl.configure(text_color=C["text_muted"])
         self.frames_lbl.configure(text_color=C["text_dim"])
         self.desc_lbl.configure(text_color=C["text_muted"])
+        
+        # Confidence frame
+        self.confidence_frame.configure(fg_color=C["elevated"])
+        if not self._running:
+            self.confidence_lbl.configure(text_color=C["accent"])
+            self.classification_lbl.configure(text_color=C["text_dim"])
         
         # Controls card
         self.ctrl_card.configure(fg_color=C["surface"], border_color=C["border"])
