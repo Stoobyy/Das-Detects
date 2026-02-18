@@ -97,10 +97,10 @@ LIGHT_THEME = {
 C = DARK_THEME.copy()
 
 
-# Path to the quantised TFLite model (relative to this script)
-_MODEL_PATH = os.path.join(
+# Directory for TFLite models
+_MODEL_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
-    "models", "voice_classifier.tflite",
+    "models",
 )
 
 
@@ -127,8 +127,17 @@ class App(ctk.CTk):
         self._last_classification = "—"
         
         # Auto-load the TFLite model at startup
+        # Discover models
+        self.available_models = self._scan_models()
+        self.current_model_name = None
+        
+        # Auto-load the default model (prefer v5, or latest)
         self._classifier: TFLiteVoiceClassifier | None = None
-        self._load_model()
+        if self.available_models:
+            # Prefer v5 if available, else take last (likely newest version)
+            default = next((m for m in self.available_models if "v5" in m), self.available_models[-1])
+            self.current_model_name = default
+            self._load_model(default)
         
         # Temp folder for audio clips
         self._temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp")
@@ -139,13 +148,21 @@ class App(ctk.CTk):
         # Cleanup on close
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         
-    def _load_model(self):
-        """Pre-load the TFLite AI voice classifier."""
+    def _scan_models(self):
+        """Find all .tflite models in the models directory."""
+        if not os.path.exists(_MODEL_DIR):
+            return []
+        models = [f for f in os.listdir(_MODEL_DIR) if f.endswith(".tflite")]
+        return sorted(models)
+
+    def _load_model(self, model_filename):
+        """Load a specific TFLite model."""
+        path = os.path.join(_MODEL_DIR, model_filename)
         try:
-            self._classifier = TFLiteVoiceClassifier(_MODEL_PATH)
-            print(f"[Model] Loaded OK: {_MODEL_PATH}")
+            self._classifier = TFLiteVoiceClassifier(path)
+            print(f"[Model] Loaded OK: {model_filename}")
         except Exception as e:
-            print(f"[Model] FAILED to load: {e}")
+            print(f"[Model] FAILED to load {model_filename}: {e}")
             self._classifier = None
     
     def _on_close(self):
@@ -278,14 +295,30 @@ class App(ctk.CTk):
         self.classification_lbl.pack(pady=(0, 12))
         
         # Model status indicator
-        model_status = "✓ Model loaded" if self._classifier else "✗ Model not found"
+        model_status = "✓ Model Active" if self._classifier else "✗ No Model"
         model_color  = C["safe"] if self._classifier else C["alert"]
-        self.model_lbl = ctk.CTkLabel(
+        self.model_status_lbl = ctk.CTkLabel(
             inner, text=model_status,
-            font=ctk.CTkFont(size=11),
+            font=ctk.CTkFont(size=12, weight="bold"),
             text_color=model_color
         )
-        self.model_lbl.pack(pady=(8, 0))
+        self.model_status_lbl.pack(pady=(8, 0))
+        
+        # Model Selection Dropdown
+        if self.available_models:
+            self.model_var = ctk.StringVar(value=self.current_model_name)
+            self.model_menu = ctk.CTkOptionMenu(
+                inner, variable=self.model_var,
+                values=self.available_models,
+                command=self._on_model_change,
+                fg_color=C["elevated"], 
+                button_color=C["accent"],
+                button_hover_color=C["accent_soft"],
+                text_color=C["text"],
+                height=24,
+                width=160
+            )
+            self.model_menu.pack(pady=(8, 0))
         
         # Thin divider
         div = ctk.CTkFrame(inner, height=1, fg_color=C["border"], width=200)
@@ -373,6 +406,19 @@ class App(ctk.CTk):
         self._wave_active = False
         self._bars = [6] * 50
         self._draw_wave()
+
+    def _on_model_change(self, choice):
+        """Handle model switching from dropdown."""
+        if choice != self.current_model_name:
+            self.current_model_name = choice
+            self._load_model(choice)
+            
+            # Update status label
+            status = "✓ Model Active" if self._classifier else "✗ Load Failed"
+            color = C["safe"] if self._classifier else C["alert"]
+            self.model_status_lbl.configure(text=status, text_color=color)
+            
+            notify("Model Switched", f"Now using: {choice}")
         
     # ─────────────────────────────────────
     # VOIP CALLBACKS
@@ -492,6 +538,8 @@ class App(ctk.CTk):
                 
                 # Drop mostly-silent frames (>40% silence)
                 sr = silence_ratio(frame, sr=48000)
+                max_amp = np.max(np.abs(frame))
+                print(f"[Frame {self._frames_processed}] Silence: {sr*100:.1f}% | Max Amp: {max_amp:.6f}")
                 if sr > 0.4:
                     print(f"[Skip] Frame {self._frames_processed} — {sr*100:.0f}% silent")
                 elif self._classifier:

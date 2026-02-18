@@ -36,7 +36,7 @@ CUSTOM_AI_DIR = Path(r"C:\Users\amrit\Downloads\final_Dataset\boosting_selection
 LIBRISPEECH_MANIFEST = Path(r"D:\datasets\prepared\manifest_librispeech.csv")
 ASVSPOOF_MANIFEST = Path(r"D:\datasets\prepared\manifest_balanced.csv")
 
-OUTPUT_MANIFEST = Path(r"D:\datasets\prepared\manifest_custom_balanced_v4.csv")
+OUTPUT_MANIFEST = Path(r"D:\datasets\prepared\manifest_custom_balanced_v5.csv")
 
 
 def scan_custom_data(folder: Path, label: str, label_int: int, source: str):
