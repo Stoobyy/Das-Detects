@@ -32,6 +32,7 @@ from modules.audio_recorder import AudioRecorder
 from modules.voip_monitor import VoIPMonitor
 from modules.tflite_inferencer import TFLiteVoiceClassifier, silence_ratio
 from modules.gmm_inferencer import GMMVoiceClassifier
+from modules.decision_engine import DecisionEngine
 
 # Notifications
 try:
@@ -181,6 +182,13 @@ class App(ctk.CTk):
         # Ensemble tracking
         self._cnn_result = None   # latest CNN result
         self._gmm_result = None   # latest GMM result
+        
+        # Decision engine for frame smoothing
+        self._decision_engine = DecisionEngine(
+            buffer_size=5,
+            cnn_weight=0.6,
+            gmm_weight=0.4,
+        )
         
         # Auto-load the TFLite model at startup
         # Discover models
@@ -363,7 +371,20 @@ class App(ctk.CTk):
             font=ctk.CTkFont(size=14),
             text_color=C["text_dim"]
         )
-        self.confidence_lbl.pack(pady=(0, 12))
+        self.confidence_lbl.pack(pady=(0, 8))
+        
+        # Buffer indicator — 5 small boxes showing per-frame status
+        self.buffer_row = ctk.CTkFrame(self.confidence_frame, fg_color="transparent")
+        self.buffer_row.pack(pady=(0, 12))
+        self._buffer_boxes = []
+        for i in range(5):
+            box = ctk.CTkFrame(
+                self.buffer_row, width=28, height=8,
+                corner_radius=3, fg_color=C["border"]
+            )
+            box.pack(side="left", padx=2)
+            box.pack_propagate(False)
+            self._buffer_boxes.append(box)
         
         # Thin divider
         div = ctk.CTkFrame(inner, height=1, fg_color=C["border"], width=200)
@@ -566,6 +587,7 @@ class App(ctk.CTk):
         self._frames_processed = 0
         self._cnn_result = None
         self._gmm_result = None
+        self._decision_engine.reset()
         self.after(0, self._reset_call_display)
     
     def _update_call_ui(self, call_active: bool):
@@ -595,6 +617,7 @@ class App(ctk.CTk):
         self._frames_processed = 0
         self._cnn_result = None
         self._gmm_result = None
+        self._decision_engine.reset()
         
         # Animate button to "Stop" style (filled teal)
         self._animate_btn_transition(
@@ -657,6 +680,8 @@ class App(ctk.CTk):
         self.desc_lbl.configure(text="Press Start to begin monitoring")
         self.classification_lbl.configure(text="—", text_color=C["accent"])
         self.confidence_lbl.configure(text="Confidence: —", text_color=C["text_dim"])
+        for box in self._buffer_boxes:
+            box.configure(fg_color=C["border"])
     
     def _reset_call_display(self):
         """Reset confidence display after a call ends, but stay in MONITORING."""
@@ -665,6 +690,8 @@ class App(ctk.CTk):
         self.desc_lbl.configure(text="Waiting for VoIP call...")
         self.classification_lbl.configure(text="—", text_color=C["accent"])
         self.confidence_lbl.configure(text="Confidence: —", text_color=C["text_dim"])
+        for box in self._buffer_boxes:
+            box.configure(fg_color=C["border"])
         
     # ─────────────────────────────────────
     # FRAME PROCESSING LOOP
@@ -720,29 +747,29 @@ class App(ctk.CTk):
         self._job = self.after(100, self._process_frames)
     
     def _update_ensemble(self):
-        """Combine CNN + GMM results into a single ensemble score."""
+        """Combine CNN + GMM results into a smoothed ensemble score."""
         if self._cnn_result is None and self._gmm_result is None:
             return
         
-        # Get individual confidences
+        # Get individual confidences (0–100 scale from classifiers)
         cnn_conf = self._cnn_result[0] if self._cnn_result else None
         gmm_conf = self._gmm_result[0] if self._gmm_result else None
         
-        # 50/50 weighted average (if both available)
-        if cnn_conf is not None and gmm_conf is not None:
-            confidence = (cnn_conf * 0.6) + (gmm_conf * 0.4)
-        elif cnn_conf is not None:
-            confidence = cnn_conf
-        else:
-            confidence = gmm_conf
+        # Convert to 0–1 for the decision engine
+        cnn_prob = cnn_conf / 100.0 if cnn_conf is not None else None
+        gmm_prob = gmm_conf / 100.0 if gmm_conf is not None else None
         
-        # Derive label from ensemble confidence
-        if confidence < 50:
-            label = "HUMAN"
-        elif confidence < 70:
-            label = "SUSPICIOUS"
-        else:
-            label = "AI"
+        # Feed into decision engine (handles ensemble + buffer + smoothing)
+        result = self._decision_engine.update(cnn_prob, gmm_prob)
+        
+        # Map labels to UI display names
+        label_map = {
+            DecisionEngine.LABEL_HUMAN: "HUMAN",
+            DecisionEngine.LABEL_SUSPICIOUS: "SUSPICIOUS",
+            DecisionEngine.LABEL_AI: "AI",
+        }
+        label = label_map.get(result.label, result.label)
+        confidence = result.average_score * 100  # back to 0–100 for display
         
         self._last_confidence = confidence
         self._last_classification = label
@@ -763,6 +790,20 @@ class App(ctk.CTk):
             details.append(f"GMM: {gmm_conf:.1f}%")
         detail_text = " · ".join(details) if details else ""
         
+        # Update buffer indicator boxes
+        scores = self._decision_engine.buffer_scores
+        for i, box in enumerate(self._buffer_boxes):
+            if i < len(scores):
+                frame_label = self._decision_engine.classify_score(scores[i])
+                if frame_label == DecisionEngine.LABEL_HUMAN:
+                    box.configure(fg_color=C["safe"])
+                elif frame_label == DecisionEngine.LABEL_SUSPICIOUS:
+                    box.configure(fg_color=C["warn"])
+                else:
+                    box.configure(fg_color=C["alert"])
+            else:
+                box.configure(fg_color=C["border"])  # empty slot
+        
         # Update classification + confidence UI
         self.classification_lbl.configure(
             text=f"{label}",
@@ -776,11 +817,9 @@ class App(ctk.CTk):
         word = "frame" if self._frames_processed == 1 else "frames"
         self.frames_lbl.configure(text=f"{self._frames_processed} {word} analyzed")
         
-        # Notify on detections
-        if label == "AI":
-            notify("🚨 AI Voice Detected", f"Ensemble: {confidence:.1f}% ({detail_text})")
-        elif label == "SUSPICIOUS":
-            notify("⚠ Suspicious Voice", f"Ensemble: {confidence:.1f}% ({detail_text})")
+        # Notification — only fires once per AI transition, after buffer fill
+        if result.should_notify:
+            notify("🚨 AI Voice Detected", f"Smoothed: {confidence:.1f}% ({detail_text})")
         
         print(f"[Ensemble] {label} | {confidence:.1f}% ({detail_text})")
     

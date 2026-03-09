@@ -14,6 +14,7 @@ from modules.check_app import (
 from modules.audio_recorder import AudioRecorder
 from modules.voip_monitor import VoIPMonitor
 from modules.gmm_inferencer import GMMVoiceClassifier
+from modules.decision_engine import DecisionEngine
 
 __all__ = [
     "is_call_active",
@@ -24,4 +25,5 @@ __all__ = [
     "AudioRecorder",
     "VoIPMonitor",
     "GMMVoiceClassifier",
+    "DecisionEngine",
 ]
