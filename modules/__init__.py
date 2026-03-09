@@ -13,6 +13,7 @@ from modules.check_app import (
 )
 from modules.audio_recorder import AudioRecorder
 from modules.voip_monitor import VoIPMonitor
+from modules.gmm_inferencer import GMMVoiceClassifier
 
 __all__ = [
     "is_call_active",
@@ -22,4 +23,5 @@ __all__ = [
     "is_mic_in_use_by_voip",
     "AudioRecorder",
     "VoIPMonitor",
+    "GMMVoiceClassifier",
 ]
