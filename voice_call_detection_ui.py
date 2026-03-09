@@ -20,6 +20,7 @@ warnings.filterwarnings("ignore", module="tensorflow")    # all TF warnings
 import customtkinter as ctk
 import shutil
 import random
+import math
 from datetime import datetime
 from scipy.io.wavfile import write as write_wav
 import numpy as np
@@ -74,7 +75,7 @@ DARK_THEME = {
     "alert": "#f87171",
     
     # Button text
-    "btn_text": "#000",
+    "btn_text": "#fff",
 }
 
 LIGHT_THEME = {
@@ -106,6 +107,36 @@ LIGHT_THEME = {
 C = DARK_THEME.copy()
 
 
+def _hex_to_rgb(h):
+    """Convert hex color string to (r, g, b) tuple. Handles #fff and transparent."""
+    if not h or h == "transparent":
+        h = C.get("bg", "#000000")
+    h = h.lstrip("#")
+    if len(h) == 3:
+        h = h[0]*2 + h[1]*2 + h[2]*2
+    return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+
+def _rgb_to_hex(r, g, b):
+    """Convert (r, g, b) tuple to hex color string."""
+    return f"#{int(r):02x}{int(g):02x}{int(b):02x}"
+
+def _lerp_color(c1, c2, t):
+    """Linearly interpolate between two hex colors. t=0→c1, t=1→c2."""
+    r1, g1, b1 = _hex_to_rgb(c1)
+    r2, g2, b2 = _hex_to_rgb(c2)
+    return _rgb_to_hex(
+        r1 + (r2 - r1) * t,
+        g1 + (g2 - g1) * t,
+        b1 + (b2 - b1) * t,
+    )
+
+def _ease_in_out(t):
+    """Smooth ease-in-out curve (cubic)."""
+    if t < 0.5:
+        return 4 * t * t * t
+    return 1 - pow(-2 * t + 2, 3) / 2
+
+
 # Directory for TFLite models
 _MODEL_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
@@ -129,6 +160,15 @@ class App(ctk.CTk):
         self._last = None
         self._job = None
         self._is_dark_mode = True  # Track current theme
+        
+        # Animation state
+        self._btn_anim_job = None
+        self._btn_current_fg = C["surface"]       # current button bg color
+        self._btn_current_text = C["text_dim"]     # current button text color
+        self._conf_anim_job = None
+        self._conf_display_value = 0.0   # currently displayed confidence
+        self._wave_fade_job = None
+        self._wave_phase = 0.0           # sine wave phase
         
         # Real VoIP monitoring components
         self._voip_monitor: VoIPMonitor | None = None
@@ -307,13 +347,23 @@ class App(ctk.CTk):
         )
         self.frames_lbl.pack(pady=(8, 0))
         
-        # Classification Display
+        # Confidence Score Display
+        self.confidence_frame = ctk.CTkFrame(inner, fg_color=C["elevated"], corner_radius=8)
+        self.confidence_frame.pack(pady=(16, 0), fill="x")
+        
         self.classification_lbl = ctk.CTkLabel(
-            inner, text="—",
-            font=ctk.CTkFont(size=22, weight="bold"),
+            self.confidence_frame, text="—",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            text_color=C["accent"]
+        )
+        self.classification_lbl.pack(pady=(12, 4))
+        
+        self.confidence_lbl = ctk.CTkLabel(
+            self.confidence_frame, text="Confidence: —",
+            font=ctk.CTkFont(size=14),
             text_color=C["text_dim"]
         )
-        self.classification_lbl.pack(pady=(16, 0))
+        self.confidence_lbl.pack(pady=(0, 12))
         
         # Thin divider
         div = ctk.CTkFrame(inner, height=1, fg_color=C["border"], width=200)
@@ -338,36 +388,17 @@ class App(ctk.CTk):
         ctrl_inner = ctk.CTkFrame(self.ctrl_card, fg_color="transparent")
         ctrl_inner.pack(fill="both", expand=True, padx=24, pady=20)
         
-        btn_row = ctk.CTkFrame(ctrl_inner, fg_color="transparent")
-        btn_row.pack(fill="x")
-        btn_row.grid_columnconfigure(0, weight=1)
-        btn_row.grid_columnconfigure(1, weight=1)
-        
-        self.start_btn = ctk.CTkButton(
-            btn_row, text="Start Monitoring",
+        self.toggle_btn = ctk.CTkButton(
+            ctrl_inner, text="Start Monitoring",
             font=ctk.CTkFont(size=15, weight="bold"),
-            fg_color=C["accent"], hover_color=C["accent_soft"],
-            text_color=C["btn_text"], height=44, corner_radius=10,
-            command=self._start
-        )
-        self.start_btn.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        
-        self.stop_btn = ctk.CTkButton(
-            btn_row, text="Stop",
-            font=ctk.CTkFont(size=15),
             fg_color="transparent", hover_color=C["elevated"],
             border_width=1, border_color=C["border"],
             text_color=C["text_dim"], height=44, corner_radius=10,
-            command=self._stop, state="disabled"
+            command=self._toggle
         )
-        self.stop_btn.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        self.toggle_btn.pack(fill="x")
         
-        self.state_lbl = ctk.CTkLabel(
-            ctrl_inner, text="● Idle",
-            font=ctk.CTkFont(size=13),
-            text_color=C["text_muted"]
-        )
-        self.state_lbl.pack(pady=(12, 0))
+
         
     # ─────────────────────────────────────
     # WAVEFORM ANIMATION
@@ -376,38 +407,131 @@ class App(ctk.CTk):
         self.wave.delete("all")
         w = self.wave.winfo_width() or 600
         h = self.wave.winfo_height() or 36
-        bw = (w / len(self._bars)) - 1
+        n = len(self._bars)
+        bw = (w / n) - 1
         
         for i, bh in enumerate(self._bars):
             x = i * (bw + 1)
             y = (h - bh) / 2
-            color = C["accent"] if self._wave_active else C["border"]
+            # Fade color based on bar height (subtle gradient)
+            t = max(0, min(1, (bh - 6) / 22))  # 0 when flat, 1 when max
+            color = _lerp_color(C["border"], C["accent"], t) if self._wave_active else C["border"]
             self.wave.create_rectangle(x, y, x+bw, y+bh, fill=color, outline="")
             
     def _animate_wave(self):
         if not self._wave_active:
             return
+        self._wave_phase += 0.12
         for i in range(len(self._bars)):
-            t = random.randint(6, 28)
-            self._bars[i] += (t - self._bars[i]) * 0.25
+            # Sine-based motion with per-bar phase offset + random jitter
+            base = math.sin(self._wave_phase + i * 0.35) * 0.5 + 0.5  # 0-1
+            jitter = random.uniform(-0.1, 0.1)
+            target = 6 + (base + jitter) * 22
+            self._bars[i] += (target - self._bars[i]) * 0.18  # smooth lerp
         self._draw_wave()
-        self.after(50, self._animate_wave)
+        self.after(33, self._animate_wave)  # ~30fps for smoothness
         
     def _start_wave(self):
         self._wave_active = True
+        self._wave_phase = 0.0
+        if self._wave_fade_job:
+            self.after_cancel(self._wave_fade_job)
+            self._wave_fade_job = None
         self._animate_wave()
         
     def _stop_wave(self):
         self._wave_active = False
-        self._bars = [6] * 50
+        self._fade_wave_out()
+    
+    def _fade_wave_out(self):
+        """Smoothly settle waveform bars to flat."""
+        settled = True
+        for i in range(len(self._bars)):
+            self._bars[i] += (6 - self._bars[i]) * 0.15
+            if abs(self._bars[i] - 6) > 0.5:
+                settled = False
         self._draw_wave()
+        if not settled:
+            self._wave_fade_job = self.after(33, self._fade_wave_out)
+        else:
+            self._bars = [6] * 50
+            self._draw_wave()
+            self._wave_fade_job = None
 
-    def _on_model_change(self, choice):
-        """Handle model switching from dropdown."""
-        if choice != self.current_model_name:
-            self.current_model_name = choice
-            self._load_model(choice)
-            notify("Model Switched", f"Now using: {choice}")
+    # ─────────────────────────────────────
+    # BUTTON ANIMATION
+    # ─────────────────────────────────────
+    def _animate_btn_transition(self, target_fg, target_text_color, target_text, fill, steps=12, step=0):
+        """Smoothly animate button between states over N steps."""
+        if self._btn_anim_job:
+            self.after_cancel(self._btn_anim_job)
+            self._btn_anim_job = None
+        
+        # Capture starting colors
+        start_fg = self._btn_current_fg if hasattr(self, '_btn_current_fg') else (C["surface"] if not fill else C["accent"])
+        start_text = self._btn_current_text if hasattr(self, '_btn_current_text') else (C["text_dim"] if fill else C["btn_text"])
+        
+        self._btn_current_fg = start_fg
+        self._btn_current_text = start_text
+        
+        # Set text and border immediately
+        self.toggle_btn.configure(
+            text=target_text,
+            border_width=0 if fill else 1,
+            border_color=C["border"],
+            hover_color=C["accent_soft"] if fill else C["elevated"]
+        )
+        
+        self._run_btn_step(start_fg, target_fg, start_text, target_text_color, fill, step, steps)
+    
+    def _run_btn_step(self, start_fg, target_fg, start_text, target_text, fill, step, steps):
+        """Execute one frame of button color animation."""
+        if step > steps:
+            self._btn_current_fg = target_fg
+            self._btn_current_text = target_text
+            self._btn_anim_job = None
+            return
+        
+        t = _ease_in_out(step / steps)
+        fg = _lerp_color(start_fg, target_fg, t)
+        tc = _lerp_color(start_text, target_text, t)
+        
+        self.toggle_btn.configure(fg_color=fg, text_color=tc)
+        self._btn_current_fg = fg
+        self._btn_current_text = tc
+        
+        self._btn_anim_job = self.after(20, self._run_btn_step,
+            start_fg, target_fg, start_text, target_text, fill, step + 1, steps)
+    
+    # ─────────────────────────────────────
+    # CONFIDENCE ANIMATION
+    # ─────────────────────────────────────
+    def _animate_confidence(self, target, detail_text, conf_color):
+        """Smoothly animate confidence value to target."""
+        if self._conf_anim_job:
+            self.after_cancel(self._conf_anim_job)
+            self._conf_anim_job = None
+        self._conf_target = target
+        self._conf_detail_text = detail_text
+        self._conf_color = conf_color
+        self._tick_confidence()
+    
+    def _tick_confidence(self):
+        """One frame of confidence counter animation."""
+        diff = self._conf_target - self._conf_display_value
+        if abs(diff) < 0.3:
+            self._conf_display_value = self._conf_target
+            self._conf_anim_job = None
+        else:
+            self._conf_display_value += diff * 0.25  # smooth ease
+            self._conf_anim_job = self.after(33, self._tick_confidence)
+        
+        # Update label
+        v = self._conf_display_value
+        text = f"Confidence: {v:.1f}%"
+        if self._conf_detail_text:
+            text += f"  ({self._conf_detail_text})"
+        self.confidence_lbl.configure(text=text, text_color=self._conf_color)
         
     # ─────────────────────────────────────
     # VOIP CALLBACKS
@@ -458,15 +582,28 @@ class App(ctk.CTk):
     # ─────────────────────────────────────
     # CONTROLS
     # ─────────────────────────────────────
+    def _toggle(self):
+        """Toggle between start and stop."""
+        if self._running:
+            self._stop()
+        else:
+            self._start()
+    
     def _start(self):
         self._running = True
         self._last = None
         self._frames_processed = 0
         self._cnn_result = None
         self._gmm_result = None
-        self.start_btn.configure(state="disabled")
-        self.stop_btn.configure(state="normal")
-        self.state_lbl.configure(text="● Monitoring", text_color=C["accent"])
+        
+        # Animate button to "Stop" style (filled teal)
+        self._animate_btn_transition(
+            target_fg=C["accent"],
+            target_text_color=C["btn_text"],
+            target_text="Stop",
+            fill=True
+        )
+
         self.frames_lbl.configure(text="0 frames recorded")
         
         # Initialize real components
@@ -502,9 +639,14 @@ class App(ctk.CTk):
             self.after_cancel(self._job)
             self._job = None
             
-        self.start_btn.configure(state="normal")
-        self.stop_btn.configure(state="disabled")
-        self.state_lbl.configure(text="● Idle", text_color=C["text_muted"])
+        # Animate button back to hollow "Start" style
+        self._animate_btn_transition(
+            target_fg=C["surface"],
+            target_text_color=C["text_dim"],
+            target_text="Start Monitoring",
+            fill=False
+        )
+
         self._stop_wave()
         self._reset_status()
         self.call_frame.pack_forget()
@@ -513,14 +655,16 @@ class App(ctk.CTk):
         self.status_lbl.configure(text="READY", text_color=C["text_muted"])
         self.frames_lbl.configure(text="0 frames recorded")
         self.desc_lbl.configure(text="Press Start to begin monitoring")
-        self.classification_lbl.configure(text="—", text_color=C["text_dim"])
+        self.classification_lbl.configure(text="—", text_color=C["accent"])
+        self.confidence_lbl.configure(text="Confidence: —", text_color=C["text_dim"])
     
     def _reset_call_display(self):
         """Reset confidence display after a call ends, but stay in MONITORING."""
         self.status_lbl.configure(text="MONITORING", text_color=C["accent"])
         self.frames_lbl.configure(text="0 frames recorded")
         self.desc_lbl.configure(text="Waiting for VoIP call...")
-        self.classification_lbl.configure(text="—", text_color=C["text_dim"])
+        self.classification_lbl.configure(text="—", text_color=C["accent"])
+        self.confidence_lbl.configure(text="Confidence: —", text_color=C["text_dim"])
         
     # ─────────────────────────────────────
     # FRAME PROCESSING LOOP
@@ -619,11 +763,14 @@ class App(ctk.CTk):
             details.append(f"GMM: {gmm_conf:.1f}%")
         detail_text = " · ".join(details) if details else ""
         
-        # Update classification label (confidence is log-only)
+        # Update classification + confidence UI
         self.classification_lbl.configure(
-            text=label,
+            text=f"{label}",
             text_color=conf_color
         )
+        
+        # Animate confidence counter
+        self._animate_confidence(confidence, detail_text, conf_color)
         
         # Update frame counter
         word = "frame" if self._frames_processed == 1 else "frames"
@@ -704,28 +851,32 @@ class App(ctk.CTk):
         self.frames_lbl.configure(text_color=C["text_dim"])
         self.desc_lbl.configure(text_color=C["text_muted"])
         
-        # Classification label
+        # Confidence frame
+        self.confidence_frame.configure(fg_color=C["elevated"])
         if not self._running:
-            self.classification_lbl.configure(text_color=C["text_dim"])
+            self.classification_lbl.configure(text_color=C["accent"])
+            self.confidence_lbl.configure(text_color=C["text_dim"])
         
         # Controls card
         self.ctrl_card.configure(fg_color=C["surface"], border_color=C["border"])
         
-        # Control buttons
-        self.start_btn.configure(
-            fg_color=C["accent"],
-            hover_color=C["accent_soft"],
-            text_color=C["btn_text"]
-        )
-        self.stop_btn.configure(
-            hover_color=C["elevated"],
-            border_color=C["border"],
-            text_color=C["text_dim"]
-        )
+        # Toggle button
+        if self._running:
+            self.toggle_btn.configure(
+                fg_color=C["accent"],
+                hover_color=C["accent_soft"],
+                text_color=C["btn_text"]
+            )
+        else:
+            self.toggle_btn.configure(
+                fg_color="transparent",
+                hover_color=C["elevated"],
+                border_color=C["border"],
+                text_color=C["text_dim"]
+            )
         
         # State label
-        if not self._running:
-            self.state_lbl.configure(text_color=C["text_muted"])
+
 
 
 if __name__ == "__main__":
