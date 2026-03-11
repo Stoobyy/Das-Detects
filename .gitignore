@@ -4,3 +4,4 @@ __pycache__/cnn_classifier.cpython-312.pyc
 /augmented_data
 /human
 /temp
+.env

@@ -33,6 +33,9 @@ from modules.voip_monitor import VoIPMonitor
 from modules.tflite_inferencer import TFLiteVoiceClassifier, silence_ratio
 from modules.gmm_inferencer import GMMVoiceClassifier
 from modules.decision_engine import DecisionEngine
+from modules.caller_id_extractor import CallerIDExtractor
+from modules.supabase_client import SupabaseClientDB
+import hashlib
 
 # Notifications
 try:
@@ -190,6 +193,13 @@ class App(ctk.CTk):
             gmm_weight=0.4,
         )
         
+        # Blocklist feature
+        self._caller_id_extractor = CallerIDExtractor()
+        self._supabase_client = SupabaseClientDB()
+        self._current_caller_hash = None
+        self._is_caller_flagged = False
+        self._call_was_ai = False
+        
         # Auto-load the TFLite model at startup
         # Discover models
         self.available_models = self._scan_models()
@@ -317,6 +327,16 @@ class App(ctk.CTk):
         # ─────────────────────────────────────
         # CALL DETECTION BANNER
         # ─────────────────────────────────────
+        self.warning_lbl = ctk.CTkLabel(
+            pad, 
+            text="⚠️ WARNING: Community Flagged AI Caller!",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color=C["bg"], # will show on a red background 
+            fg_color=C["alert"],
+            corner_radius=8
+        )
+        # We don't pack it yet, only when flagged
+        
         self.call_frame = ctk.CTkFrame(
             pad, fg_color=C["surface"],
             corner_radius=10, border_width=1, border_color=C["accent"]
@@ -560,18 +580,40 @@ class App(ctk.CTk):
     def _on_call_start(self):
         """Called when a VoIP call is detected."""
         self._call_active = True
+        self._call_was_ai = False
         self.after(0, self._update_call_ui, True)
         
         # Start recording
         if self._audio_recorder:
             self._audio_recorder.start()
-            
-        notify("📞 Call Detected", "VoIP call started — recording audio")
+        
+        # Blocklist Feature: Extract and check caller ID
+        number = self._caller_id_extractor.extract_caller_id()
+        if number:
+            print(f"[Blocklist] Extracted WhatsApp Caller ID: {number}")
+            self._current_caller_hash = hashlib.sha256(number.encode()).hexdigest()
+            # Check Supabase
+            is_flagged = self._supabase_client.check_flagged_number(self._current_caller_hash)
+            if is_flagged:
+                self._is_caller_flagged = True
+                print(f"[Blocklist] ⚠️ Caller is a known AI scammer!")
+                notify("⚠️ AI Scammer Flagged", "A community-flagged AI caller is calling!")
+                # Show warning safely on main thread
+                self.after(0, self._show_caller_warning)
+            else:
+                self._is_caller_flagged = False
+                print(f"[Blocklist] Caller not flagged or is new.")
     
+    def _show_caller_warning(self):
+        self.warning_lbl.pack(fill="x", pady=(0, 16), before=self.status_card)
+
     def _on_call_end(self):
         """Called when VoIP call ends."""
         self._call_active = False
         self.after(0, self._update_call_ui, False)
+        
+        # Hide warning label
+        self.after(0, lambda: self.warning_lbl.pack_forget())
         
         # Stop recording
         if self._audio_recorder:
@@ -582,6 +624,19 @@ class App(ctk.CTk):
             notify("📴 Call Ended", f"Analyzed {self._frames_processed} frames\nLast: {self._last_classification} ({self._last_confidence:.1f}%)")
         else:
             notify("📴 Call Ended", "No audio frames captured")
+            
+        # Blocklist Feature: Flag if classified as AI at any point during the call
+        if self._call_was_ai and self._current_caller_hash:
+            print("[Blocklist] Call was classified as AI. Flagging number in Supabase...")
+            success = self._supabase_client.flag_number(self._current_caller_hash)
+            if success:
+                print(f"[Blocklist] Successfully flagged caller in Supabase.")
+            else:
+                print(f"[Blocklist] Failed to flag caller.")
+        
+        # Reset current caller
+        self._current_caller_hash = None
+        self._is_caller_flagged = False
         
         # Reset counters for next call (but stay in MONITORING)
         self._frames_processed = 0
@@ -618,6 +673,7 @@ class App(ctk.CTk):
         self._cnn_result = None
         self._gmm_result = None
         self._decision_engine.reset()
+        self._call_was_ai = False
         
         # Animate button to "Stop" style (filled teal)
         self._animate_btn_transition(
@@ -773,6 +829,9 @@ class App(ctk.CTk):
         
         self._last_confidence = confidence
         self._last_classification = label
+        
+        if label == "AI":
+            self._call_was_ai = True
         
         # Pick colour based on classification
         if label == "HUMAN":
