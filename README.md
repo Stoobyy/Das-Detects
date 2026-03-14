@@ -70,4 +70,4 @@ Detailed sub-modules handling discrete business logic as described above (`audio
 3. Install dependencies via `pip install -r requirements.txt`.
 4. Ensure `models/` directory contains at least one `.tflite` and the required `.pkl` files in `models/gmm/`.
 5. Set `SUPABASE_URL` and `SUPABASE_KEY` in your `.env` (optional, for blocklist integration).
-6. Run `python voice_call_detection_ui.py`.
+6. Run `python voice_call_detection_ui.py`.  .
