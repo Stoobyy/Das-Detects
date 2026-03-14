@@ -5,3 +5,6 @@ __pycache__/cnn_classifier.cpython-312.pyc
 /human
 /temp
 .env
+/behind_the_scenes
+/.claude
+/__pycache__
