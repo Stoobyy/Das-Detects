@@ -24,7 +24,7 @@ The system processes audio frames using two parallel machine learning models to 
   - Normalizes the input to -20 dB RMS.
   - Runs a quantized TensorFlow Lite (`.tflite`) model in a dedicated background worker thread to yield an AI-likelihood probability.
 - **GMM Classifier (`gmm_inferencer.py`)**: 
-  - Extracts Linear Frequency Cepstral Coefficients (LFCC) from the audio stream.
+  - Extracts Linear Frequency Cepstral Coefficients (LFCC) from the audio frames.
   - Computes the log-likelihood scores across two pre-trained Gaussian Mixture Models (`.pkl`): one modeling human speech and one modeling AI speech.
   - Converts the likelihood differential into a bounded confidence score via a sigmoid mapping.
 
